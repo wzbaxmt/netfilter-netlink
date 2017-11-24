@@ -1,4 +1,4 @@
-NAME		:= mynetlink
+NAME		:= test
 obj-m		:= $(NAME).o
 KERNEL_DIR	?= /lib/modules/$(shell uname -r)/build
 

@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wextra -Wall -g -O0 -DDEBUG -lpthread
 
 SOURCES = main.c
-BIN_NAME = mynetlink
+BIN_NAME = test
 
 all: $(BIN_NAME)
 

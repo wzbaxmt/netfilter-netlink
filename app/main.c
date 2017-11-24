@@ -66,6 +66,18 @@ static void dump_nlmsg(struct nlmsghdr *nlh)
 	printf("User Debug End===============\n");
 }
 
+static void printkHex(char *data, int data_len, int padding_len, char* pt_mark)
+{	
+	int i = 0;
+	printf("[%s]length=%d:%d;Data Content:\n", pt_mark, data_len, padding_len);
+	for (i = 0; i < (data_len+padding_len); i ++) 
+	{
+		if(0 == (i%16) && i != 0)
+			printf("[%d]\n",i/16);
+		printf("%02x ", data[i] & 0xFF);
+	}
+	printf("\n");
+}
 
 void *send_thread(void *arg)
 {
@@ -140,7 +152,7 @@ void *rcv_thread(void *arg)
 	id3=pthread_self();
     while(1)
 	{	
-		sleep(13);
+		sleep(1);
         printf("rcv_thread is running id =%d\n",id3);
         pthread_mutex_lock(&mutex);
         pthread_cond_wait(&cond,&mutex);

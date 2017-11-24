@@ -10,53 +10,45 @@
 
 static struct task_struct *t1;
 
+struct config
+{
+	unsigned char	sPort[2];
+	unsigned char	dPort[2];
+	unsigned char	sIP[4];
+	unsigned char	dIP[4];
+	unsigned char	sMac[6];
+	unsigned char	dMac[6];
+};
+
+struct configList
+{
+	unsigned char	type;
+	unsigned char	report;
+	struct config	packetConfig;
+	struct	list_head	list;
+};
+struct configList listhead =
+{
+	.list=LIST_HEAD_INIT(listhead.list)
+};
+
 int PID = 0;
 
 /* The netlink socket. */
 static struct sock *test_nl_sock;
 static struct nf_hook_ops nfhk_local_in;
 
-static void dump_nlmsg(struct nlmsghdr *nlh)
-{
-	int i, j, len;
-	unsigned char *data = NLMSG_DATA(nlh);
-	int col = 16;
-	int datalen = NLMSG_PAYLOAD(nlh, 0);
-
-	printk(KERN_DEBUG "===============DEBUG START===============\n");
-	printk(KERN_DEBUG "nlmsghdr info (%d):\n", NLMSG_HDRLEN);
-	printk(KERN_DEBUG
-		"  nlmsg_len\t= %d\n" "  nlmsg_type\t= %d\n"
-		"  nlmsg_flags\t= %d\n" "  nlmsg_seq\t= %d\n" "  nlmsg_pid\t= %d\n",
-		nlh->nlmsg_len, nlh->nlmsg_type,
-		nlh->nlmsg_flags, nlh->nlmsg_seq, nlh->nlmsg_pid);
-
-	printk(KERN_DEBUG "nlmsgdata info (%d):\n", datalen);
-
-	for (i = 0; i < datalen; i += col) {
-		len = (datalen - i < col) ? (datalen - i) : col;
-
-		printk("  ");
-		for (j = 0; j < col; j++) {
-			if (j < len)
-				printk("%02x ", data[i + j]);
-			else
-				printk("   ");
-
-		}
-		printk("\t");
-		for (j = 0; j < len; j++) {
-			if (j < len)
-				if (isprint(data[i + j]))
-					printk("%c", data[i + j]);
-				else
-					printk(".");
-			else
-				printk(" ");
-		}
-		printk("\n");
+static void printkHex(char *data, int data_len, int padding_len, char* pt_mark)
+{	
+	int i = 0;
+	printk("[%s]length=%d:%d;Data Content:\n", pt_mark, data_len, padding_len);
+	for (i = 0; i < (data_len+padding_len); i ++) 
+	{
+		if(0 == (i%16) && i != 0)
+			printk("[%d]\n",i/16);
+		printk("%02x ", data[i] & 0xFF);
 	}
-	printk(KERN_DEBUG "===============DEBUG END===============\n");
+	printk("\n");
 }
 
 static int send_msg_to_user(int pid, void* str, int str_len)
@@ -78,8 +70,7 @@ static int send_msg_to_user(int pid, void* str, int str_len)
 		return -EMSGSIZE;
 	}
 	memcpy(NLMSG_DATA(nlh), str, len);
-	
-	dump_nlmsg(nlh);
+	printkHex(NLMSG_DATA(nlh), len, 0, "send_msg_to_user");
 
 	return nlmsg_unicast(test_nl_sock, skb, pid);
 }
@@ -94,6 +85,20 @@ static int netlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 	char *str = "get string from userspace!";
 	int str_len = strlen(str);
 	send_msg_to_user(PID, str, str_len);
+	if(0)
+	{
+	struct configList *list_node,*pp;
+	struct list_head *list_head;
+	int ip_count = 0;
+	list_node=&listhead;
+	list_for_each(list_head,&list_node->list)//遍历链表
+	{
+		ip_count++;
+		pp=list_entry(list_head, struct configList, list);
+		printkHex(pp, sizeof(struct configList)-ip_count, ip_count, "configList");
+	}
+
+	}
 	return 0;
 }
 
@@ -108,9 +113,6 @@ static void test_nl_rcv_skb(struct sk_buff *skb)
 
 		nlh = nlmsg_hdr(skb);
 		err = 0;
-
-		/* debug info */
-		dump_nlmsg(nlh);
 
 		if (nlh->nlmsg_len < NLMSG_HDRLEN || skb->len < nlh->nlmsg_len) {
 			return;
@@ -130,15 +132,29 @@ static void test_nl_rcv_skb(struct sk_buff *skb)
 }
 
 
-static int t1_f(void *unused)
+static int kthread_send(void *unused)
 {
 	while(!kthread_should_stop())
 	{
 		if(PID)
 		{
-			char *str = "hello userspace!";
-			int str_len = strlen(str);
-			send_msg_to_user(PID, str, str_len);
+			struct configList *list_node,*pp;
+			struct list_head *list_head;
+			int ip_count = 0;
+			list_node=&listhead;
+			list_for_each(list_head,&list_node->list)//遍历链表
+			{
+				pp=list_entry(list_head, struct configList, list);
+				if(0 == pp->report)
+				{	
+					send_msg_to_user(PID, pp, sizeof(struct configList));
+					pp->report = 1;					
+					ip_count++;
+				}
+				else
+					break;
+			}
+			printk("send %d config\n",ip_count);
 		}
 		ssleep(1);
 	}
@@ -153,6 +169,8 @@ static unsigned int nf_hook_in(unsigned int hooknum,struct sk_buff *skb,const st
 	struct iphdr 	*iph = NULL;//IPv4头部（IP头）
 	struct tcphdr	*tcph = NULL;//tcp头部
 	struct udphdr	*udph = NULL;//tcp头部
+	struct config	packetConfig = {0};
+	int i;
 	if(skb == NULL) 
 	{
 		printk("skb is NULL!\n");
@@ -177,17 +195,82 @@ static unsigned int nf_hook_in(unsigned int hooknum,struct sk_buff *skb,const st
 	if (IPPROTO_UDP ==	iph->protocol)
 	{
 		printk("IPPROTO_UDP\n");
+		udph = (struct udphdr *) ((u8 *) iph + (iph->ihl << 2)); //important!	
+		printk("dest_Mac:%pM, source_Mac:%pM, h_proto:%x\n",eth->h_dest, eth->h_source, ntohs(eth->h_proto));
+		printk("version:%d, ihl:%d, tos:%x, tot_len:%d,id:%d, frag_off:%d,ttl:%d, protocol:%d, check:%d, saddr:%pI4, daddr:%pI4\n",\
+		iph->version,iph->ihl,iph->tos,ntohs(iph->tot_len),ntohs(iph->id), ntohs(iph->frag_off) & ~(0x7 << 13),iph->ttl,iph->protocol,iph->check,&iph->saddr,&iph->daddr);
+		printk("source_Port:%d, dest_Port:%d,len:%d check:%d\n",ntohs(udph->source), ntohs(udph->dest), udph->len, udph->check);
+		for(i = 0; i < 6; i ++)
+		{
+			packetConfig.sMac[i] = eth->h_source[i];
+			packetConfig.dMac[i] = eth->h_dest[i];
+		}
+		memcpy((&packetConfig.sIP), &iph->saddr, sizeof(iph->daddr));
+		memcpy((&packetConfig.dIP), &iph->daddr, sizeof(iph->daddr));
+		memcpy((&packetConfig.sPort), &udph->source, sizeof(udph->source));
+		memcpy((&packetConfig.dPort), &udph->dest, sizeof(udph->dest));
+		printkHex(&packetConfig, sizeof(packetConfig), 0, "UDP packetConfig");
+		{
+		struct configList *rcv_data;
+		rcv_data=kmalloc(sizeof(struct configList),GFP_ATOMIC);
+		memset(rcv_data,0,sizeof(struct configList));
+		if(rcv_data == NULL)
+			return 1;
+		memset(rcv_data, 0, sizeof(struct configList));
+		rcv_data->type = 1;
+		memcpy(&rcv_data->packetConfig,&packetConfig,sizeof(packetConfig));
+		list_add(&rcv_data->list,&listhead.list);
+		}
+		
 	}
 	else if (IPPROTO_TCP ==	iph->protocol)
 	{
 		printk("IPPROTO_TCP\n");
+		tcph = (struct tcphdr *) ((u8 *) iph + (iph->ihl << 2)); //important!	
+		printk("h_dest:%pM, h_source:%pM, h_proto:%x\n",eth->h_dest, eth->h_source, ntohs(eth->h_proto));
+		printk("version:%d, ihl:%d, tos:%x, tot_len:%d,id:%d, frag_off:%d,ttl:%d, protocol:%d, check:%d, saddr:%pI4, daddr:%pI4\n",\
+		iph->version,iph->ihl,iph->tos,ntohs(iph->tot_len),ntohs(iph->id), ntohs(iph->frag_off) & ~(0x7 << 13),iph->ttl,iph->protocol,iph->check,&iph->saddr,&iph->daddr);
+		printk("source_Port:%d, dest_Port:%d, seq:%d, ack_seq:%d, res1:%d,doff:%d, fin:%d, syn:%d, rst:%d, psh:%d, ack:%d, urg:%d, ece:%d,cwr:%d, window:%d, check:%d, urg_ptr:%d\n",\
+			ntohs(tcph->source),ntohs(tcph->dest),ntohs(tcph->seq),ntohs(tcph->ack_seq),tcph->res1,tcph->doff,tcph->fin,tcph->syn,tcph->rst,tcph->psh,tcph->ack,tcph->urg,
+			tcph->ece,tcph->cwr,ntohs(tcph->window),tcph->check,ntohs(tcph->urg_ptr));
+		for(i = 0; i < 6; i ++)
+		{
+			packetConfig.sMac[i] = eth->h_source[i];
+			packetConfig.dMac[i] = eth->h_dest[i];
+		}
+		memcpy((&packetConfig.sIP), &iph->saddr, sizeof(iph->daddr));
+		memcpy((&packetConfig.dIP), &iph->daddr, sizeof(iph->daddr));
+		memcpy((&packetConfig.sPort), &tcph->source, sizeof(udph->source));
+		memcpy((&packetConfig.dPort), &tcph->dest, sizeof(udph->dest));
+		printkHex(&packetConfig, sizeof(packetConfig), 0, "TCP packetConfig");
+		{
+		struct configList *rcv_data;
+		rcv_data=kmalloc(sizeof(struct configList),GFP_ATOMIC);
+		memset(rcv_data,0,sizeof(struct configList));
+		if(rcv_data == NULL)
+			return 1;
+		memset(rcv_data, 0, sizeof(struct configList));
+		rcv_data->type = 2;
+		memcpy(&rcv_data->packetConfig,&packetConfig,sizeof(packetConfig));
+		list_add(&rcv_data->list,&listhead.list);
+		}
 	}
 	else
 	{
 		printk("iph->protocol = %d\n",iph->protocol);
 	}
+	printk("**********************************************************\n");
 	return NF_ACCEPT;
 }
+
+static void init_list()
+{
+	struct configList *rcv_data;
+	rcv_data=kmalloc(sizeof(struct configList),GFP_ATOMIC);
+	memset(rcv_data,0,sizeof(struct configList));
+	list_add(&rcv_data->list,&listhead.list);
+}
+
 static int __init test_nl_init(void)
 {
 	int ret;
@@ -208,8 +291,8 @@ static int __init test_nl_init(void)
         printk("LOCAL_IN Register Error\n");
         return ret;
     }
-	
-	t1 = kthread_create(t1_f,NULL,"mythread1");
+	init_list();
+	t1 = kthread_create(kthread_send,NULL,"mythread1");
 	if(t1)
 	{
 		printk(KERN_INFO "Thread Created Sucessfully\n");
